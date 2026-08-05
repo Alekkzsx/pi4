@@ -1,8 +1,0 @@
-﻿language: "pt-BR"
-reviews:
-  high_level_summary: true
-  poem: false
-  request_changes_workflow: true
-  auto_review:
-    enabled: true
-    drafts: false
