@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-generativeai PyGithub
+          pip install google-genai google-generativeai PyGithub
 
       - name: Run Gemini Code Review
         env:
@@ -65,11 +65,26 @@ jobs:
               print("Nenhum modelo de geração de conteúdo disponível!")
               sys.exit(1)
 
-          selected_model_name = next(
-              (m for m in available_models if 'flash' in m.lower()), 
-              available_models[0]
-          )
-          print(f"Modelo selecionado: {selected_model_name}")
+          # Lista de preferência ordenando pelas versões mais recentes e avançadas (Gemini 3.6, 3.5, 2.5 Pro/Flash)
+          preferred_order = [
+              'models/gemini-3.6-flash',
+              'models/gemini-3.5-flash',
+              'models/gemini-3.1-pro-preview',
+              'models/gemini-2.5-pro',
+              'models/gemini-2.5-flash',
+              'models/gemini-2.0-flash'
+          ]
+
+          selected_model_name = None
+          for pref in preferred_order:
+              if pref in available_models:
+                  selected_model_name = pref
+                  break
+
+          if not selected_model_name:
+              selected_model_name = available_models[0]
+
+          print(f"🚀 Modelo Gemini mais atual selecionado: {selected_model_name}")
 
           model = genai.GenerativeModel(selected_model_name)
 
@@ -88,7 +103,7 @@ jobs:
           commits_str = "\n".join(f"- {c.strip()}" for c in commits)
 
           prompt = f"""
-          Você é um Revisor de Código Sênior focado em qualidade, segurança e padronização. Analise o seguinte Pull Request:
+          Você é um Revisor de Código Sênior especialista em qualidade, arquitetura, segurança e padronização. Analise o seguinte Pull Request:
 
           Título do PR: {pr.title}
 
@@ -101,14 +116,14 @@ jobs:
           Responda OBRIGATORIAMENTE em Português do Brasil (pt-BR) fornecendo duas seções:
 
           ---GENERAL_REVIEW---
-          ## 🤖 Análise do Gemini AI - Code Review
+          ## 🤖 Análise do Gemini AI ({selected_model_name}) - Code Review
 
           ### 🚦 Status da Verificação
           Escreva estritamente `[STATUS: REPROVADO]` se houver QUALQUER erro crítico de código/segurança OU se houver qualquer mensagem de commit que NÃO siga o padrão Conventional Commits (ex: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`). Caso o código e commits estejam 100% corretos, escreva `[STATUS: APROVADO]`.
 
           ### 📝 Validação de Commits e Padrão (Conventional Commits)
           - Verifique se as mensagens de commit listadas acima seguem o padrão Conventional Commits.
-          - Se houver algum commit fora do padrão, liste-o expressamente e dê o comando de correção.
+          - Se houver algum commit fora do padrão, liste-o expressamente e dê o comando de correção no terminal.
 
           ### 🎯 Resumo das Alterações
           - Resumo simples de 2 a 3 frases explicativas sobre o que este PR altera.
@@ -133,7 +148,6 @@ jobs:
           response = model.generate_content(prompt)
           text = response.text
 
-          # Separa o relatório geral do JSON de sugestões inline
           parts = text.split("---INLINE_SUGGESTIONS---")
           general_review = parts[0].replace("---GENERAL_REVIEW---", "").strip()
           
@@ -164,7 +178,7 @@ jobs:
                       event=event_type,
                       comments=inline_comments
                   )
-                  print("Revisão formal enviada com comentários INLINE (botão Commit Suggestion ativo)!")
+                  print("Revisão formal enviada com comentários INLINE!")
               else:
                   pr.create_review(body=general_review, event=event_type)
                   print("Revisão formal enviada com sucesso!")
@@ -173,7 +187,7 @@ jobs:
               pr.create_review(body=general_review, event=event_type)
 
           if is_reprovado:
-              print("❌ Gemini encontrou falhas no PR (Bugs ou Commits fora do padrão). Bloqueando o Merge no GitHub Actions!")
+              print("❌ Gemini encontrou falhas no PR. Bloqueando o Merge no GitHub Actions!")
               sys.exit(1)
           else:
               print("✅ PR aprovado pelo Gemini AI!")
