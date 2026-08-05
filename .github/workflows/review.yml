@@ -53,6 +53,33 @@ jobs:
               print("ERRO: A secret GEMINI_API_KEY não foi encontrada!")
               sys.exit(1)
 
+          gh = Github(gh_token)
+          repo = gh.get_repo(repo_name)
+          pr = repo.get_pull(pr_number)
+
+          base_branch = pr.base.ref
+          head_branch = pr.head.ref
+
+          # REGRA: Pull Requests para a 'main' DEVEM vir obrigatoriamente da 'develop'
+          if base_branch == "main" and head_branch != "develop":
+              branch_error_msg = f"""## 🔍 Reviewer - Code Review
+
+### 🚦 Status da Verificação
+[STATUS: REPROVADO]
+
+⛔ **Violação de Regra de Fluxo de Branches**:
+Pull Requests com destino à branch `main` DEVEM vir obrigatoriamente da branch `develop`!
+(Sua solicitação tentou enviar diretamente da branch `{head_branch}`).
+
+Por favor, redirecione este Pull Request para a branch `develop` para seguir o fluxo oficial do repositório.
+"""
+              try:
+                  pr.create_review(body=branch_error_msg, event="REQUEST_CHANGES")
+              except Exception as e:
+                  pr.create_issue_comment(branch_error_msg)
+              print(f"❌ PR para a main rejeitado porque a branch de origem é '{head_branch}' em vez de 'develop'!")
+              sys.exit(1)
+
           genai.configure(api_key=gemini_key)
 
           available_models = [
@@ -81,10 +108,6 @@ jobs:
           print(f"🚀 Modelo selecionado para Reviewer: {selected_model_name}")
 
           model = genai.GenerativeModel(selected_model_name)
-
-          gh = Github(gh_token)
-          repo = gh.get_repo(repo_name)
-          pr = repo.get_pull(pr_number)
 
           commits = [commit.commit.message for commit in pr.get_commits()]
           latest_commit = list(pr.get_commits())[-1]
