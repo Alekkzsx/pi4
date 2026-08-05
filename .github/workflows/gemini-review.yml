@@ -19,29 +19,94 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Revisor IA do Gemini
-        uses: truongnh1992/gemini-ai-code-reviewer@main
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-generativeai PyGithub
+
+      - name: Run Gemini Code Review
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: "gemini-3.5-flash"
-          CUSTOM_PROMPT: |
-            Você é um Revisor de Código Sênior focado em qualidade, segurança e padronização.
-            Responda SEMPRE em Português do Brasil (pt-BR).
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          python - << 'EOF'
+          import os
+          import sys
+          from github import Github
+          import google.generativeai as genai
 
-            Por favor, estruture sua análise no seguinte padrão exato:
+          gemini_key = os.environ.get("GEMINI_API_KEY")
+          gh_token = os.environ.get("GITHUB_TOKEN")
+          pr_number = int(os.environ.get("PR_NUMBER"))
+          repo_name = os.environ.get("REPO_NAME")
 
-            ## 🤖 Análise do Gemini AI - Code Review
+          if not gemini_key:
+              print("ERRO: A secret GEMINI_API_KEY não foi encontrada!")
+              sys.exit(1)
 
-            ### 📝 Validação de Commits e Padrão
-            - Verifique se os commits e título do PR seguem o padrão **Conventional Commits** (ex: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
-            - Caso esteja fora do padrão, indique claramente o commit e sugira a mensagem correta.
+          genai.configure(api_key=gemini_key)
+          
+          # Tenta usar modelos flash válidos da API Gemini
+          model_name = 'gemini-1.5-flash'
+          try:
+              model = genai.GenerativeModel(model_name)
+          except Exception as e:
+              print(f"Erro ao instanciar {model_name}: {e}")
+              model = genai.GenerativeModel('gemini-pro')
 
-            ### 🎯 Resumo das Alterações
-            - Breve explicação do que o código altera ou adiciona.
+          gh = Github(gh_token)
+          repo = gh.get_repo(repo_name)
+          pr = repo.get_pull(pr_number)
 
-            ### ⚠️ Pontos de Atenção & Erros
-            - Bugs potenciais, falhas de segurança ou problemas de desempenho.
+          # Coleta mensagens de commit e arquivos alterados
+          commits = [commit.commit.message for commit in pr.get_commits()]
+          files = pr.get_files()
+          
+          diff_text = ""
+          for f in files:
+              diff_text += f"\nArquivo: {f.filename} ({f.status})\nPatch:\n{f.patch or 'Sem alteração de código'}\n"
 
-            ### 💡 Sugestões de Melhoria (com 1 clique)
-            - Utilize blocos de sugestão interativos do GitHub (```suggestion) onde aplicável para facilitar a aplicação da correção.
+          commits_str = "\n".join(f"- {c.strip()}" for c in commits)
+
+          prompt = f"""
+          Você é um Revisor de Código Sênior. Analise o seguinte Pull Request:
+
+          Título do PR: {pr.title}
+
+          Mensagens dos Commits:
+          {commits_str}
+
+          Diff de Código Alterado:
+          {diff_text[:15000]}
+
+          Responda OBRIGATORIAMENTE em Português do Brasil (pt-BR) no seguinte formato Markdown estrito:
+
+          ## 🤖 Análise do Gemini AI - Code Review
+
+          ### 📝 Validação de Commits e Padrão (Conventional Commits)
+          - Verifique se as mensagens de commit listadas acima seguem o padrão Conventional Commits (ex: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
+          - Se houver algum commit fora do padrão, mencione e dê o comando exato de sugestão para ajustar.
+
+          ### 🎯 Resumo das Alterações
+          - Resumo simples de 2 a 3 frases explicativas.
+
+          ### ⚠️ Pontos de Atenção & Erros
+          - Identifique possíveis bugs, exceções não tratadas (ex: divisão por zero), falta de validação ou falhas de segurança no código.
+
+          ### 💡 Sugestões de Melhoria (com 1 clique)
+          - Forneça blocos de sugestão ```suggestion com o código corrigido caso haja melhorias.
+          """
+
+          response = model.generate_content(prompt)
+          comment_body = response.text
+
+          pr.create_issue_comment(comment_body)
+          print("Comentário de revisão do Gemini publicado com sucesso no PR!")
+          EOF
