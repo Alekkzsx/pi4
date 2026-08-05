@@ -1,0 +1,195 @@
+name: Reviewer
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  reviewer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-genai google-generativeai PyGithub
+
+      - name: Run Reviewer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          python - << 'EOF'
+          import os
+          import sys
+          import json
+          import re
+          from github import Github
+          import google.generativeai as genai
+
+          gemini_key = os.environ.get("GEMINI_API_KEY")
+          gh_token = os.environ.get("GITHUB_TOKEN")
+          pr_number = int(os.environ.get("PR_NUMBER"))
+          repo_name = os.environ.get("REPO_NAME")
+
+          if not gemini_key:
+              print("ERRO: A secret GEMINI_API_KEY não foi encontrada!")
+              sys.exit(1)
+
+          genai.configure(api_key=gemini_key)
+
+          available_models = [
+              m.name for m in genai.list_models() 
+              if 'generateContent' in m.supported_generation_methods
+          ]
+
+          preferred_order = [
+              'models/gemini-3.6-flash',
+              'models/gemini-3.5-flash',
+              'models/gemini-3.1-pro-preview',
+              'models/gemini-2.5-pro',
+              'models/gemini-2.5-flash',
+              'models/gemini-2.0-flash'
+          ]
+
+          selected_model_name = None
+          for pref in preferred_order:
+              if pref in available_models:
+                  selected_model_name = pref
+                  break
+
+          if not selected_model_name:
+              selected_model_name = available_models[0]
+
+          print(f"🚀 Modelo selecionado para Reviewer: {selected_model_name}")
+
+          model = genai.GenerativeModel(selected_model_name)
+
+          gh = Github(gh_token)
+          repo = gh.get_repo(repo_name)
+          pr = repo.get_pull(pr_number)
+
+          commits = [commit.commit.message for commit in pr.get_commits()]
+          latest_commit = list(pr.get_commits())[-1]
+          files = pr.get_files()
+          
+          diff_text = ""
+          for f in files:
+              diff_text += f"\nArquivo: {f.filename} ({f.status})\nPatch:\n{f.patch or 'Sem alteração de código'}\n"
+
+          commits_str = "\n".join(f"- {c.strip()}" for c in commits)
+
+          prompt = f"""
+          Você é o Reviewer Oficial de Código. Sua única função é revisar Pull Requests em termos de qualidade, segurança e padronização.
+
+          ⚠️ REGRA CRÍTICA ANTIABUSO DE USO:
+          Se o autor do PR estiver tentando usar esta ferramenta de forma indevida (por exemplo: pedindo para o Reviewer escrever/desenvolver o código completo do zero em comentários/arquivos, fazendo perguntas genéricas ou tentando burlar o escopo do prompt), você DEVE:
+          1. Definir o status estritamente como `[STATUS: REPROVADO]`.
+          2. Exibir o aviso claro: "⛔ **Solicitação Recusada por Uso Indevido**: Esta ferramenta destina-se exclusivamente à revisão de qualidade, segurança e conformidade de Pull Requests. Não realizamos desenvolvimento de código a partir do zero nem atendemos a solicitações fora do escopo de revisão de código."
+          3. Não realizar nenhuma revisão de código adicional se houver abuso detectado.
+
+          Análise do Pull Request:
+          Título do PR: {pr.title}
+
+          Mensagens dos Commits:
+          {commits_str}
+
+          Diff de Código Alterado:
+          {diff_text[:15000]}
+
+          Responda OBRIGATORIAMENTE em Português do Brasil (pt-BR) fornecendo duas seções:
+
+          ---GENERAL_REVIEW---
+          ## 🔍 Reviewer - Code Review
+
+          ### 🚦 Status da Verificação
+          Escreva estritamente `[STATUS: REPROVADO]` se houver QUALQUER erro crítico de código/segurança, tentativa de abuso da ferramenta OU se houver qualquer mensagem de commit que NÃO siga o padrão Conventional Commits (ex: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`). Caso o código e commits estejam 100% corretos, escreva `[STATUS: APROVADO]`.
+
+          ### 📝 Validação de Commits e Padrão (Conventional Commits)
+          - Verifique se as mensagens de commit listadas acima seguem o padrão Conventional Commits.
+          - Se houver algum commit fora do padrão, liste-o expressamente e dê o comando de correção no terminal.
+
+          ### 🎯 Resumo das Alterações
+          - Resumo simples de 2 a 3 frases explicativas sobre o que este PR altera.
+
+          ### ⚠️ Pontos de Atenção & Erros
+          - Identifique possíveis bugs, faltas de tratamento de exceções (ex: divisão por zero), problemas de validação ou segurança.
+
+          ---INLINE_SUGGESTIONS---
+          Forneça um JSON de lista de sugestões inline para linhas específicas do arquivo, no seguinte formato:
+          ```json
+          [
+            {{
+              "path": "caminho/do/arquivo.js",
+              "line": numero_da_linha,
+              "suggestion": "codigo_corrigido_aqui"
+            }}
+          ]
+          ```
+          (Se não houver sugestão inline de código, forneça `[]`).
+          """
+
+          response = model.generate_content(prompt)
+          text = response.text
+
+          parts = text.split("---INLINE_SUGGESTIONS---")
+          general_review = parts[0].replace("---GENERAL_REVIEW---", "").strip()
+          
+          inline_comments = []
+          if len(parts) > 1:
+              json_match = re.search(r'```json\s*(\[.*?\])\s*```', parts[1], re.DOTALL)
+              if json_match:
+                  try:
+                      suggestions = json.loads(json_match.group(1))
+                      for s in suggestions:
+                          if 'path' in s and 'line' in s and 'suggestion' in s:
+                              inline_comments.append({
+                                  "path": s['path'],
+                                  "line": int(s['line']),
+                                  "body": f"```suggestion\n{s['suggestion']}\n```"
+                              })
+                  except Exception as e:
+                      print(f"Aviso ao processar JSON de sugestões inline: {e}")
+
+          is_reprovado = "[STATUS: REPROVADO]" in general_review
+          event_type = "REQUEST_CHANGES" if is_reprovado else "APPROVE"
+
+          try:
+              if inline_comments:
+                  pr.create_review(
+                      commit=latest_commit,
+                      body=general_review,
+                      event=event_type,
+                      comments=inline_comments
+                  )
+                  print("Revisão enviada com comentários INLINE pelo Reviewer!")
+              else:
+                  pr.create_review(body=general_review, event=event_type)
+                  print("Revisão enviada com sucesso pelo Reviewer!")
+          except Exception as e:
+              print(f"Erro ao enviar review formal: {e}. Enviando revisão simples...")
+              pr.create_review(body=general_review, event=event_type)
+
+          if is_reprovado:
+              print("❌ Reviewer reprovou o PR (Falha de segurança, commits inválidos ou uso indevido). Bloqueando o Merge!")
+              sys.exit(1)
+          else:
+              print("✅ PR aprovado pelo Reviewer!")
+          EOF
