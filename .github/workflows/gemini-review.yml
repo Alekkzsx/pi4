@@ -116,16 +116,23 @@ jobs:
           - Identifique possíveis bugs, faltas de tratamento de exceções (ex: divisão por zero), problemas de validação ou segurança.
 
           ### 💡 Sugestões de Melhoria (com 1 clique)
-          - Forneça blocos de sugestão ```suggestion com o código corrigido caso haja melhorias recomendadas.
+          - Forneça blocos de sugestão ```suggestion com o código corrigido caso haja melhorias recomendadas para que o autor possa clicar em 'Commit suggestion'.
           """
 
           response = model.generate_content(prompt)
           comment_body = response.text
 
-          pr.create_issue_comment(comment_body)
-          print("Comentário de revisão do Gemini publicado com sucesso no PR!")
+          is_reprovado = "[STATUS: REPROVADO]" in comment_body
+          event_type = "REQUEST_CHANGES" if is_reprovado else "APPROVE"
 
-          if "[STATUS: REPROVADO]" in comment_body:
+          try:
+              pr.create_review(body=comment_body, event=event_type)
+              print(f"Revisão formal ({event_type}) enviada com sucesso ao Pull Request!")
+          except Exception as e:
+              print(f"Aviso ao enviar review formal: {e}. Enviando como comentário simples de Issue...")
+              pr.create_issue_comment(comment_body)
+
+          if is_reprovado:
               print("❌ Gemini encontrou falhas no PR (Bugs ou Commits fora do padrão). Bloqueando o Merge no GitHub Actions!")
               sys.exit(1)
           else:
