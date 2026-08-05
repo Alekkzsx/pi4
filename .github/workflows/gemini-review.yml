@@ -52,14 +52,26 @@ jobs:
               sys.exit(1)
 
           genai.configure(api_key=gemini_key)
-          
-          # Tenta usar modelos flash válidos da API Gemini
-          model_name = 'gemini-1.5-flash'
-          try:
-              model = genai.GenerativeModel(model_name)
-          except Exception as e:
-              print(f"Erro ao instanciar {model_name}: {e}")
-              model = genai.GenerativeModel('gemini-pro')
+
+          # Busca os modelos ativos suportados para a API Key
+          available_models = [
+              m.name for m in genai.list_models() 
+              if 'generateContent' in m.supported_generation_methods
+          ]
+          print("Modelos disponíveis:", available_models)
+
+          if not available_models:
+              print("Nenhum modelo de geração de conteúdo disponível!")
+              sys.exit(1)
+
+          # Seleciona o modelo Flash disponível ou o primeiro modelo válido
+          selected_model_name = next(
+              (m for m in available_models if 'flash' in m.lower()), 
+              available_models[0]
+          )
+          print(f"Modelo selecionado: {selected_model_name}")
+
+          model = genai.GenerativeModel(selected_model_name)
 
           gh = Github(gh_token)
           repo = gh.get_repo(repo_name)
@@ -76,7 +88,7 @@ jobs:
           commits_str = "\n".join(f"- {c.strip()}" for c in commits)
 
           prompt = f"""
-          Você é um Revisor de Código Sênior. Analise o seguinte Pull Request:
+          Você é um Revisor de Código Sênior focado em qualidade e boas práticas. Analise o seguinte Pull Request:
 
           Título do PR: {pr.title}
 
@@ -92,16 +104,16 @@ jobs:
 
           ### 📝 Validação de Commits e Padrão (Conventional Commits)
           - Verifique se as mensagens de commit listadas acima seguem o padrão Conventional Commits (ex: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
-          - Se houver algum commit fora do padrão, mencione e dê o comando exato de sugestão para ajustar.
+          - Se houver algum commit fora do padrão, mencione claramente e dê o comando exato para sugestão de ajuste no terminal.
 
           ### 🎯 Resumo das Alterações
-          - Resumo simples de 2 a 3 frases explicativas.
+          - Resumo simples de 2 a 3 frases explicativas sobre o que este PR altera.
 
           ### ⚠️ Pontos de Atenção & Erros
-          - Identifique possíveis bugs, exceções não tratadas (ex: divisão por zero), falta de validação ou falhas de segurança no código.
+          - Identifique possíveis bugs, faltas de tratamento de exceções (ex: divisão por zero), problemas de validação ou segurança.
 
           ### 💡 Sugestões de Melhoria (com 1 clique)
-          - Forneça blocos de sugestão ```suggestion com o código corrigido caso haja melhorias.
+          - Forneça blocos de sugestão ```suggestion com o código corrigido caso haja melhorias recomendadas.
           """
 
           response = model.generate_content(prompt)
