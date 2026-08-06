@@ -1,0 +1,9 @@
+# Ignorar arquivos temporários de sistema e SO
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+
+# NUNCA IGNORAR PASTAS DE REGRAS DE CI/CD E GIT HOOKS
+!.github/
+!.githooks/

@@ -103,6 +103,19 @@ jobs:
           # 2. VALIDAÇÃO DE MÉTRICAS DOS ARQUIVOS (CONTEÚDO REAL)
           # ═══════════════════════════════════════════════════════════════
 
+          # Checagem de segurança do .gitignore
+          try:
+              if os.path.exists('.gitignore'):
+                  with open('.gitignore', 'r', encoding='utf-8', errors='ignore') as gi:
+                      for i, line in enumerate(gi.readlines(), 1):
+                          clean_l = line.strip()
+                          if clean_l and not clean_l.startswith('#') and not clean_l.startswith('!'):
+                              if '.github' in clean_l or '.githooks' in clean_l:
+                                  file_errors.append(f"`.gitignore` (linha {i}) ➔ Regra proibida que tenta ignorar pastas de regras: `{clean_l}`.")
+          except Exception as e:
+              pass
+
+
           WARN_LINES = 300
           BLOCK_LINES = 500
           WARN_FUNCTIONS = 15
