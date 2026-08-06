@@ -1,5 +1,9 @@
 #!/bin/sh
+# =============================================================================
 # Git Hook Local: commit-msg
+# Valida a mensagem do commit ANTES do commit ser criado.
+# Bloqueia o commit no terminal do dev se a mensagem estiver fora do padrão.
+# =============================================================================
 
 COMMIT_MSG_FILE="$1"
 
@@ -10,7 +14,10 @@ elif command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD="python3"
 fi
 
-"$PYTHON_CMD" - "$COMMIT_MSG_FILE" << 'EOF'
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+"$PYTHON_CMD" - "$COMMIT_MSG_FILE" << 'HOOK_EOF'
 import sys
 import re
 
@@ -18,43 +25,66 @@ commit_msg_file = sys.argv[1]
 try:
     with open(commit_msg_file, 'r', encoding='utf-8') as f:
         msg = f.read().strip()
-except Exception as e:
+except Exception:
     sys.exit(0)
 
 first_line = msg.split('\n')[0].strip()
 
-# Se for um commit de merge automático, ignorar
-if first_line.startswith("Merge branch") or first_line.startswith("Revert "):
+# Ignorar commits automáticos do Git
+if first_line.startswith("Merge branch") or first_line.startswith("Merge pull request") or first_line.startswith("Revert "):
     sys.exit(0)
 
+# ─── Configuração ───
 CONVENTIONAL_COMMIT_REGEX = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
-FORBIDDEN_WORDS = ['wip', 'temp', 'teste', 'arrumando', 'ajustes', 'fix', 'changes', 'update', 'qualquer coisa']
+MAX_FIRST_LINE = 72
+MIN_DESCRIPTION = 10
+
+FORBIDDEN_WORDS = [
+    'wip', 'temp', 'teste', 'teste123', 'arrumando', 'ajustes',
+    'changes', 'update', 'qualquer coisa', 'asdf', 'aaa', 'xxx',
+    'todo', 'stuff', 'coisas', 'alteracoes', 'modificacoes',
+]
 
 errors = []
 
+# 1. Tamanho máximo da primeira linha (convenção git: 72 chars)
+if len(first_line) > MAX_FIRST_LINE:
+    errors.append(f"⛔ Primeira linha tem {len(first_line)} caracteres (Limite: {MAX_FIRST_LINE}).")
+
+# 2. Formato Conventional Commits
 if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
-    errors.append(f"⛔ Mensagem fora do padrão Conventional Commits (`type(scope): descrição`).")
+    errors.append("⛔ Fora do padrão Conventional Commits.")
+    errors.append("   Formato esperado: type(scope): descrição clara do que foi feito")
+    errors.append("   Tipos válidos: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert")
 else:
     parts = first_line.split(':', 1)
     description = parts[1].strip() if len(parts) > 1 else ""
-    
-    if len(description) < 10:
-        errors.append(f"⛔ Descrição muito curta (`{description}`). É necessário ter no mínimo 10 caracteres após o `:`.")
-    
-    if description.lower() in FORBIDDEN_WORDS or any(w == description.lower() for w in FORBIDDEN_WORDS):
-        errors.append(f"⛔ Mensagem vaga ou proibida (`{description}`). Descreva com clareza o que foi alterado.")
+
+    # 3. Descrição mínima
+    if len(description) < MIN_DESCRIPTION:
+        errors.append(f"⛔ Descrição muito curta: \"{description}\" ({len(description)} chars, mínimo: {MIN_DESCRIPTION}).")
+
+    # 4. Palavras proibidas
+    desc_lower = description.lower().strip()
+    for word in FORBIDDEN_WORDS:
+        if desc_lower == word or desc_lower.startswith(word + ' ') or desc_lower.endswith(' ' + word):
+            errors.append(f"⛔ Mensagem vaga ou proibida (\"{description}\"). Descreva com clareza o que foi alterado.")
+            break
 
 if errors:
-    print("\n❌ ========================================================")
-    print("❌ COMMIT CANCELADO: MENSAGEM DE COMMIT INVÁLIDA")
-    print("❌ ========================================================")
-    print(f"Sua mensagem: \"{first_line}\"\n")
+    print("\n❌ ══════════════════════════════════════════════════════════")
+    print("❌  COMMIT BLOQUEADO: MENSAGEM DE COMMIT INVÁLIDA")
+    print("❌ ══════════════════════════════════════════════════════════")
+    print(f"\n  Sua mensagem: \"{first_line}\"\n")
     for err in errors:
         print(f"  {err}")
-    print("\n💡 Exemplo correto: `feat(login): implementar autenticação via JWT`\n")
+    print("\n  💡 Exemplos corretos:")
+    print("     feat(auth): implementar autenticação via JWT")
+    print("     fix(api): corrigir timeout na requisição de usuários")
+    print("     docs: atualizar README com instruções de instalação\n")
     sys.exit(1)
 
 sys.exit(0)
-EOF
+HOOK_EOF
 
 exit $?

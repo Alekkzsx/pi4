@@ -1,5 +1,9 @@
 #!/bin/sh
+# =============================================================================
 # Git Hook Local: pre-commit
+# Valida métricas de qualidade dos arquivos ANTES do commit ser criado.
+# Bloqueia o commit no terminal do dev se algum arquivo violar os limites.
+# =============================================================================
 
 PYTHON_CMD="python"
 if command -v py >/dev/null 2>&1; then
@@ -8,61 +12,134 @@ elif command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD="python3"
 fi
 
-"$PYTHON_CMD" - << 'EOF'
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+"$PYTHON_CMD" - << 'HOOK_EOF'
 import subprocess
 import sys
 import re
+import os
 
+# ─── Obter arquivos em staging (adicionados, copiados ou modificados) ───
 cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"]
 result = subprocess.run(cmd, capture_output=True, text=True)
 staged_files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
 
-MAX_LINES_BLOCK = 600
-MAX_GLOBAL_MUTABLE_VARS = 10
-IGNORED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock', '.json', '.svg')
+# ─── Configuração de Limites ───
+WARN_LINES = 300
+BLOCK_LINES = 500
+WARN_FUNCTIONS = 15
+BLOCK_FUNCTIONS = 25
+BLOCK_PARAMS = 7
+
+IGNORED_FILES = (
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.svg', '.lock',
+    '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.zip', '.tar',
+    '.min.js', '.min.css', '.map',
+)
+IGNORED_NAMES = ('package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.gitignore', '.env.example')
+
+# ─── Detecção de Funções Multi-Linguagem ───
+FUNCTION_PATTERNS = {
+    '.js':   [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(', r'^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*\{'],
+    '.ts':   [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(', r'^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*:\s*\w'],
+    '.jsx':  [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\('],
+    '.tsx':  [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\('],
+    '.py':   [r'^\s*(?:async\s+)?def\s+\w+'],
+    '.java': [r'^\s*(?:public|private|protected|static|\s)+[\w<>\[\]]+\s+\w+\s*\('],
+    '.cs':   [r'^\s*(?:public|private|protected|internal|static|\s)+[\w<>\[\]]+\s+\w+\s*\('],
+    '.go':   [r'^\s*func\s+'],
+    '.rb':   [r'^\s*def\s+\w+'],
+    '.php':  [r'^\s*(?:public|private|protected|static|\s)*function\s+\w+'],
+}
+
+# ─── Regex para detectar parâmetros excessivos ───
+PARAM_PATTERNS = {
+    '.js':   r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+    '.ts':   r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+    '.jsx':  r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+    '.tsx':  r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+    '.py':   r'def\s+(\w+)\s*\(([^)]*)\)',
+    '.java': r'(?:public|private|protected|static|\s)+[\w<>\[\]]+\s+(\w+)\s*\(([^)]*)\)',
+    '.go':   r'func\s+(?:\([^)]*\)\s*)?\w+\(([^)]*)\)',
+    '.php':  r'function\s+(\w+)\s*\(([^)]*)\)',
+}
 
 errors = []
 warnings = []
 
 for filepath in staged_files:
-    if filepath.lower().endswith(IGNORED_EXTENSIONS):
+    basename = os.path.basename(filepath).lower()
+
+    if basename in IGNORED_NAMES or any(filepath.lower().endswith(ext) for ext in IGNORED_FILES):
         continue
-    
+
+    if not os.path.isfile(filepath):
+        continue
+
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
-            lines = content.split('\n')
-            total_lines = len(lines)
-            
-            if total_lines > MAX_LINES_BLOCK:
-                errors.append(f"⛔ Arquivo '{filepath}' possui {total_lines} linhas! (Bloqueio acima de {MAX_LINES_BLOCK} linhas). Divida em arquivos menores.")
-            elif total_lines > 400:
-                warnings.append(f"⚠️ Arquivo '{filepath}' possui {total_lines} linhas (Aviso: Recomendado manter abaixo de 400 linhas).")
-            
-            # Checar apenas variáveis mutáveis globais soltas no escopo raiz
-            root_let_vars = len(re.findall(r'^(let|var)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=', content, re.MULTILINE))
-            if root_let_vars > MAX_GLOBAL_MUTABLE_VARS:
-                errors.append(f"⛔ Arquivo '{filepath}' possui {root_let_vars} variáveis mutáveis globais no escopo raiz! (Limite máximo: {MAX_GLOBAL_MUTABLE_VARS}). Use encapsulamento.")
-    except Exception as e:
-        pass
+    except Exception:
+        continue
 
+    lines = content.split('\n')
+    total_lines = len(lines)
+    _, ext = os.path.splitext(filepath)
+    ext = ext.lower()
+
+    # ─── 1. Verificação de Linhas ───
+    if total_lines > BLOCK_LINES:
+        errors.append(f"  ⛔ '{filepath}'\n     → {total_lines} linhas (Limite: {BLOCK_LINES}). Divida em módulos menores.")
+    elif total_lines > WARN_LINES:
+        warnings.append(f"  ⚠️ '{filepath}'\n     → {total_lines} linhas (Recomendado: abaixo de {WARN_LINES}).")
+
+    # ─── 2. Contagem de Funções ───
+    func_patterns = FUNCTION_PATTERNS.get(ext, [])
+    func_count = 0
+    for pattern in func_patterns:
+        func_count += len(re.findall(pattern, content, re.MULTILINE))
+
+    if func_count > BLOCK_FUNCTIONS:
+        errors.append(f"  ⛔ '{filepath}'\n     → {func_count} funções (Limite: {BLOCK_FUNCTIONS}). Extraia funções auxiliares para outro arquivo.")
+    elif func_count > WARN_FUNCTIONS:
+        warnings.append(f"  ⚠️ '{filepath}'\n     → {func_count} funções (Recomendado: abaixo de {WARN_FUNCTIONS}).")
+
+    # ─── 3. Verificação de Parâmetros Excessivos ───
+    param_pattern = PARAM_PATTERNS.get(ext)
+    if param_pattern:
+        for match in re.finditer(param_pattern, content):
+            groups = match.groups()
+            params_str = groups[-1] if groups else ""
+            if params_str and params_str.strip():
+                param_count = len([p for p in params_str.split(',') if p.strip()])
+                if param_count > BLOCK_PARAMS:
+                    line_num = content[:match.start()].count('\n') + 1
+                    errors.append(f"  ⛔ '{filepath}' (linha {line_num})\n     → Função com {param_count} parâmetros (Limite: {BLOCK_PARAMS}). Use um objeto de configuração.")
+
+# ─── Saída ───
 if warnings and not errors:
-    print("\n⚠️  --------------------------------------------------------")
-    print("⚠️  AVISOS DE QUALIDADE DE CÓDIGO (Commit Permitido):")
+    print("\n⚠️  ─────────────────────────────────────────────────────────")
+    print("⚠️  AVISOS DE QUALIDADE (commit permitido, mas revise):")
     for w in warnings:
-        print(f"  {w}")
-    print("⚠️  --------------------------------------------------------\n")
+        print(w)
+    print("⚠️  ─────────────────────────────────────────────────────────\n")
 
 if errors:
-    print("\n❌ ========================================================")
-    print("❌ COMMIT CANCELADO: VIOLAÇÃO DE ESTRUTURA DE ARQUIVO")
-    print("❌ ========================================================")
+    print("\n❌ ══════════════════════════════════════════════════════════")
+    print("❌  COMMIT BLOQUEADO: VIOLAÇÃO DE MÉTRICAS DE ARQUIVO")
+    print("❌ ══════════════════════════════════════════════════════════\n")
     for err in errors:
-        print(f"  {err}")
-    print("\n💡 Dica: Evite criar arquivos monstros (> 600 linhas) ou acumular dezenas de variáveis mutáveis globais soltas.\n")
+        print(err)
+    if warnings:
+        print("\n⚠️  Avisos adicionais:")
+        for w in warnings:
+            print(w)
+    print("\n💡 Refatore o código antes de commitar.\n")
     sys.exit(1)
 
 sys.exit(0)
-EOF
+HOOK_EOF
 
 exit $?

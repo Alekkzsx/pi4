@@ -1,7 +1,6 @@
 name: Commit & File Linter
 
 on:
-  push:
   pull_request:
     branches: [ main, develop ]
     types: [opened, synchronize, reopened]
@@ -36,107 +35,216 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO_NAME: ${{ github.repository }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           python - << 'EOF'
           import os
           import sys
           import re
+          import base64
           from github import Github
 
           gh_token = os.environ.get("GITHUB_TOKEN")
-          pr_number = os.environ.get("PR_NUMBER")
+          pr_number = int(os.environ.get("PR_NUMBER", "0"))
           repo_name = os.environ.get("REPO_NAME")
-          head_commit_msg = os.environ.get("COMMIT_MSG", "")
 
-          commits = []
-          pr = None
-          if pr_number and gh_token and repo_name:
-              try:
-                  gh = Github(gh_token)
-                  repo = gh.get_repo(repo_name)
-                  pr = repo.get_pull(int(pr_number))
-                  commits = [c.commit.message for c in pr.get_commits()]
-              except Exception as e:
-                  print(f"Aviso ao buscar PR no PyGithub: {e}")
-          
-          if not commits and head_commit_msg:
-              commits = [head_commit_msg]
+          if not pr_number or not gh_token or not repo_name:
+              print("Contexto de PR não disponível. Ignorando verificação.")
+              sys.exit(0)
+
+          gh = Github(gh_token)
+          repo = gh.get_repo(repo_name)
+          pr = repo.get_pull(pr_number)
+
+          commits = [c.commit.message for c in pr.get_commits()]
+          pr_files = list(pr.get_files())
+
+          # ═══════════════════════════════════════════════════════════════
+          # 1. VALIDAÇÃO DE MENSAGENS DE COMMIT
+          # ═══════════════════════════════════════════════════════════════
 
           CONVENTIONAL_COMMIT_REGEX = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
-          FORBIDDEN_WORDS = ['wip', 'temp', 'teste', 'arrumando', 'ajustes', 'fix', 'changes', 'update', 'qualquer coisa']
+          MAX_FIRST_LINE = 72
+          MIN_DESCRIPTION = 10
+          FORBIDDEN_WORDS = [
+              'wip', 'temp', 'teste', 'teste123', 'arrumando', 'ajustes',
+              'changes', 'update', 'qualquer coisa', 'asdf', 'aaa', 'xxx',
+              'todo', 'stuff', 'coisas', 'alteracoes', 'modificacoes',
+          ]
 
-          invalid_commit_reasons = []
+          commit_errors = []
           for c in commits:
               first_line = c.split('\n')[0].strip()
-              if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
-                  invalid_commit_reasons.append(f"`{first_line}` ➔ Fora do padrão Conventional Commits (`type(scope): descrição`).")
+
+              # Ignorar merges automáticos
+              if first_line.startswith("Merge branch") or first_line.startswith("Merge pull request"):
                   continue
-              
+
+              if len(first_line) > MAX_FIRST_LINE:
+                  commit_errors.append(f"`{first_line[:50]}...` ➔ Primeira linha com {len(first_line)} chars (Limite: {MAX_FIRST_LINE}).")
+
+              if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
+                  commit_errors.append(f"`{first_line}` ➔ Fora do padrão Conventional Commits.")
+                  continue
+
               parts = first_line.split(':', 1)
               description = parts[1].strip() if len(parts) > 1 else ""
-              if len(description) < 10:
-                  invalid_commit_reasons.append(f"`{first_line}` ➔ Descrição muito curta (mínimo 10 caracteres após o `:`).")
-                  continue
-              
-              if description.lower() in FORBIDDEN_WORDS or any(w == description.lower() for w in FORBIDDEN_WORDS):
-                  invalid_commit_reasons.append(f"`{first_line}` ➔ Mensagem vaga ou proibida (`{description}`). Seja mais específico.")
 
-          # 4. ANÁLISE INTELIGENTE DE ARQUIVOS (REGRAS FLEXÍVEIS E NÃO-BRUTAS)
-          MAX_LINES_BLOCK = 600
-          MAX_GLOBAL_MUTABLE_VARS = 10
+              if len(description) < MIN_DESCRIPTION:
+                  commit_errors.append(f"`{first_line}` ➔ Descrição muito curta ({len(description)} chars, mínimo: {MIN_DESCRIPTION}).")
+                  continue
+
+              desc_lower = description.lower().strip()
+              for word in FORBIDDEN_WORDS:
+                  if desc_lower == word or desc_lower.startswith(word + ' ') or desc_lower.endswith(' ' + word):
+                      commit_errors.append(f"`{first_line}` ➔ Mensagem vaga ou proibida.")
+                      break
+
+          # ═══════════════════════════════════════════════════════════════
+          # 2. VALIDAÇÃO DE MÉTRICAS DOS ARQUIVOS (CONTEÚDO REAL)
+          # ═══════════════════════════════════════════════════════════════
+
+          WARN_LINES = 300
+          BLOCK_LINES = 500
+          WARN_FUNCTIONS = 15
+          BLOCK_FUNCTIONS = 25
+          BLOCK_PARAMS = 7
+
+          IGNORED_EXTENSIONS = (
+              '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.svg', '.lock',
+              '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.zip', '.tar',
+              '.min.js', '.min.css', '.map', '.json',
+          )
+          IGNORED_NAMES = ('package-lock.json', 'yarn.lock', 'pnpm-lock.yaml')
+
+          FUNCTION_PATTERNS = {
+              '.js':   [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(', r'^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*\{'],
+              '.ts':   [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(', r'^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*:\s*\w'],
+              '.jsx':  [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\('],
+              '.tsx':  [r'^\s*(?:export\s+)?(?:async\s+)?function\s+\w+', r'^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\('],
+              '.py':   [r'^\s*(?:async\s+)?def\s+\w+'],
+              '.java': [r'^\s*(?:public|private|protected|static|\s)+[\w<>\[\]]+\s+\w+\s*\('],
+              '.cs':   [r'^\s*(?:public|private|protected|internal|static|\s)+[\w<>\[\]]+\s+\w+\s*\('],
+              '.go':   [r'^\s*func\s+'],
+              '.rb':   [r'^\s*def\s+\w+'],
+              '.php':  [r'^\s*(?:public|private|protected|static|\s)*function\s+\w+'],
+          }
+
+          PARAM_PATTERNS = {
+              '.js':   r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+              '.ts':   r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+              '.jsx':  r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+              '.tsx':  r'(?:function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?)\(([^)]*)\)',
+              '.py':   r'def\s+\w+\s*\(([^)]*)\)',
+              '.java': r'(?:public|private|protected|static|\s)+[\w<>\[\]]+\s+\w+\s*\(([^)]*)\)',
+              '.go':   r'func\s+(?:\([^)]*\)\s*)?\w+\(([^)]*)\)',
+              '.php':  r'function\s+\w+\s*\(([^)]*)\)',
+          }
+
           file_errors = []
           file_warnings = []
 
-          if pr:
-              try:
-                  for f in pr.get_files():
-                      if f.status == 'removed' or f.filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock', '.json', '.svg')):
-                          continue
-                      patch = f.patch or ""
-                      lines_count = patch.count('\n') + 1 if patch else 0
-                      
-                      # Limite de linhas flexível
-                      if lines_count > MAX_LINES_BLOCK:
-                          file_errors.append(f"`{f.filename}` ➔ Arquivo com {lines_count} linhas (Bloqueio acima de {MAX_LINES_BLOCK} linhas). Divida em módulos menores.")
-                      elif lines_count > 400:
-                          file_warnings.append(f"`{f.filename}` ➔ Arquivo com {lines_count} linhas (Aviso: Próximo do limite ideal de 400 linhas).")
-                      
-                      # Focar apenas em variáveis mutáveis no escopo raiz (let/var fora de funções ou mutáveis globais)
-                      root_let_vars = len(re.findall(r'^(let|var)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=', patch, re.MULTILINE))
-                      if root_let_vars > MAX_GLOBAL_MUTABLE_VARS:
-                          file_errors.append(f"`{f.filename}` ➔ {root_let_vars} variáveis mutáveis globais soltas no escopo raiz (Limite permitido: {MAX_GLOBAL_MUTABLE_VARS}). Use encapsulamento.")
-              except Exception as e:
-                  print(f"Aviso ao analisar arquivos do PR: {e}")
+          for f in pr_files:
+              if f.status == 'removed':
+                  continue
+              fname = f.filename
+              basename = fname.split('/')[-1].lower()
 
-          if file_warnings and not file_errors and not invalid_commit_reasons:
-              print("⚠️ AVISOS DE QUALIDADE DE CÓDIGO (Não bloqueantes):")
+              if basename in IGNORED_NAMES or any(fname.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
+                  continue
+
+              _, ext = os.path.splitext(fname)
+              ext = ext.lower()
+
+              # Buscar conteúdo REAL do arquivo via API do GitHub (não o patch/diff)
+              try:
+                  file_content_obj = repo.get_contents(fname, ref=pr.head.sha)
+                  if file_content_obj.encoding == 'base64':
+                      content = base64.b64decode(file_content_obj.content).decode('utf-8', errors='ignore')
+                  else:
+                      content = file_content_obj.decoded_content.decode('utf-8', errors='ignore')
+              except Exception:
+                  continue
+
+              lines = content.split('\n')
+              total_lines = len(lines)
+
+              # Linhas
+              if total_lines > BLOCK_LINES:
+                  file_errors.append(f"`{fname}` ➔ {total_lines} linhas (Bloqueio > {BLOCK_LINES}). Divida em módulos menores.")
+              elif total_lines > WARN_LINES:
+                  file_warnings.append(f"`{fname}` ➔ {total_lines} linhas (Aviso: recomendado < {WARN_LINES}).")
+
+              # Funções
+              func_pats = FUNCTION_PATTERNS.get(ext, [])
+              func_count = 0
+              for pattern in func_pats:
+                  func_count += len(re.findall(pattern, content, re.MULTILINE))
+
+              if func_count > BLOCK_FUNCTIONS:
+                  file_errors.append(f"`{fname}` ➔ {func_count} funções (Bloqueio > {BLOCK_FUNCTIONS}). Extraia para outro arquivo.")
+              elif func_count > WARN_FUNCTIONS:
+                  file_warnings.append(f"`{fname}` ➔ {func_count} funções (Aviso: recomendado < {WARN_FUNCTIONS}).")
+
+              # Parâmetros excessivos
+              param_pat = PARAM_PATTERNS.get(ext)
+              if param_pat:
+                  for match in re.finditer(param_pat, content):
+                      params_str = match.group(1) if match.groups() else ""
+                      if params_str and params_str.strip():
+                          param_count = len([p for p in params_str.split(',') if p.strip()])
+                          if param_count > BLOCK_PARAMS:
+                              line_num = content[:match.start()].count('\n') + 1
+                              file_errors.append(f"`{fname}` (linha {line_num}) ➔ Função com {param_count} parâmetros (Limite: {BLOCK_PARAMS}).")
+
+          # ═══════════════════════════════════════════════════════════════
+          # 3. RELATÓRIO FINAL
+          # ═══════════════════════════════════════════════════════════════
+
+          has_errors = bool(commit_errors or file_errors)
+
+          if file_warnings and not has_errors:
+              print("⚠️ Avisos de qualidade (não bloqueantes):")
               for w in file_warnings:
                   print(f"  - {w}")
 
-          if invalid_commit_reasons or file_errors:
+          if has_errors:
               print("❌ REPROVADO NO COMMIT & FILE LINTER!")
-              if invalid_commit_reasons:
-                  print("\n⛔ Erros de Commit:")
-                  for r in invalid_commit_reasons:
-                      print(f"  - {r}")
+
+              report = "## ⛔ Commit & File Linter — Falha na Verificação\n\n"
+
+              if commit_errors:
+                  report += "### 📝 Erros nas Mensagens de Commit\n"
+                  for e in commit_errors:
+                      report += f"- {e}\n"
+                  report += "\n"
+
               if file_errors:
-                  print("\n⛔ Erros de Arquivo:")
+                  report += "### 📁 Erros nas Métricas de Arquivo\n"
                   for e in file_errors:
-                      print(f"  - {e}")
-              
-              if pr:
-                  report = "## ⛔ Commit & File Linter - Falha na Verificação\n\n"
-                  if invalid_commit_reasons:
-                      report += "### 📝 Erros nas Mensagens de Commit:\n" + "\n".join(f"- {r}" for r in invalid_commit_reasons) + "\n\n"
-                  if file_errors:
-                      report += "### 📁 Erros nas Regras de Arquivo:\n" + "\n".join(f"- {e}" for e in file_errors) + "\n\n"
-                  report += "💡 **Como corrigir**: Ajuste a mensagem do commit com `git commit --amend` e refatore variáveis globais soltas ou arquivos muito extensos."
+                      report += f"- {e}\n"
+                  report += "\n"
+
+              if file_warnings:
+                  report += "### ⚠️ Avisos de Qualidade (não bloqueantes)\n"
+                  for w in file_warnings:
+                      report += f"- {w}\n"
+                  report += "\n"
+
+              report += "---\n"
+              report += "💡 **Como corrigir:**\n"
+              report += "- Mensagem de commit: `git commit --amend -m \"feat(modulo): descrição detalhada\"`\n"
+              report += "- Arquivos grandes: Divida em módulos menores.\n"
+              report += "- Funções com muitos parâmetros: Use um objeto de configuração.\n"
+
+              try:
+                  pr.create_review(body=report, event="REQUEST_CHANGES")
+              except Exception:
                   try:
-                      pr.create_review(body=report, event="REQUEST_CHANGES")
-                  except Exception as ex:
                       pr.create_issue_comment(report)
+                  except Exception:
+                      pass
+
               sys.exit(1)
 
-          print("✅ Commit & File Linter: Concluído com sucesso!")
+          print("✅ Commit & File Linter: Todos os commits e arquivos estão em conformidade!")
           EOF
