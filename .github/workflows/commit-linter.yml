@@ -69,46 +69,53 @@ jobs:
           invalid_commit_reasons = []
           for c in commits:
               first_line = c.split('\n')[0].strip()
-              # 1. Checagem de Formato Regex (Conventional Commits)
               if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
                   invalid_commit_reasons.append(f"`{first_line}` ➔ Fora do padrão Conventional Commits (`type(scope): descrição`).")
                   continue
               
-              # 2. Checagem de Tamanho Mínimo de Descrição (>= 10 caracteres)
               parts = first_line.split(':', 1)
               description = parts[1].strip() if len(parts) > 1 else ""
               if len(description) < 10:
                   invalid_commit_reasons.append(f"`{first_line}` ➔ Descrição muito curta (mínimo 10 caracteres após o `:`).")
                   continue
               
-              # 3. Checagem de Palavras Proibidas / Vagas
               if description.lower() in FORBIDDEN_WORDS or any(w == description.lower() for w in FORBIDDEN_WORDS):
                   invalid_commit_reasons.append(f"`{first_line}` ➔ Mensagem vaga ou proibida (`{description}`). Seja mais específico.")
 
-          # 4. Checagem de Métricas dos Arquivos (Máximo de Linhas e Variáveis por Arquivo)
-          MAX_LINES_PER_FILE = 400
-          MAX_VARS_PER_FILE = 25
+          # 4. ANÁLISE INTELIGENTE DE ARQUIVOS (REGRAS FLEXÍVEIS E NÃO-BRUTAS)
+          MAX_LINES_BLOCK = 600
+          MAX_GLOBAL_MUTABLE_VARS = 10
           file_errors = []
+          file_warnings = []
 
           if pr:
               try:
                   for f in pr.get_files():
-                      if f.status == 'removed' or f.filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock')):
+                      if f.status == 'removed' or f.filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock', '.json', '.svg')):
                           continue
                       patch = f.patch or ""
                       lines_count = patch.count('\n') + 1 if patch else 0
-                      if lines_count > MAX_LINES_PER_FILE:
-                          file_errors.append(f"`{f.filename}` ➔ {lines_count} linhas alteradas (Limite permitido: {MAX_LINES_PER_FILE} linhas).")
-                      var_matches = len(re.findall(r'\b(var|let|const|[a-zA-Z_][a-zA-Z0-9_]*\s*=)\b', patch))
-                      if var_matches > MAX_VARS_PER_FILE:
-                          file_errors.append(f"`{f.filename}` ➔ {var_matches} variáveis alteradas (Limite permitido: {MAX_VARS_PER_FILE} variáveis).")
+                      
+                      # Limite de linhas flexível
+                      if lines_count > MAX_LINES_BLOCK:
+                          file_errors.append(f"`{f.filename}` ➔ Arquivo com {lines_count} linhas (Bloqueio acima de {MAX_LINES_BLOCK} linhas). Divida em módulos menores.")
+                      elif lines_count > 400:
+                          file_warnings.append(f"`{f.filename}` ➔ Arquivo com {lines_count} linhas (Aviso: Próximo do limite ideal de 400 linhas).")
+                      
+                      # Focar apenas em variáveis mutáveis no escopo raiz (let/var fora de funções ou mutáveis globais)
+                      root_let_vars = len(re.findall(r'^(let|var)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=', patch, re.MULTILINE))
+                      if root_let_vars > MAX_GLOBAL_MUTABLE_VARS:
+                          file_errors.append(f"`{f.filename}` ➔ {root_let_vars} variáveis mutáveis globais soltas no escopo raiz (Limite permitido: {MAX_GLOBAL_MUTABLE_VARS}). Use encapsulamento.")
               except Exception as e:
                   print(f"Aviso ao analisar arquivos do PR: {e}")
 
+          if file_warnings and not file_errors and not invalid_commit_reasons:
+              print("⚠️ AVISOS DE QUALIDADE DE CÓDIGO (Não bloqueantes):")
+              for w in file_warnings:
+                  print(f"  - {w}")
+
           if invalid_commit_reasons or file_errors:
-              print("❌ ===========================================")
               print("❌ REPROVADO NO COMMIT & FILE LINTER!")
-              print("❌ ===========================================")
               if invalid_commit_reasons:
                   print("\n⛔ Erros de Commit:")
                   for r in invalid_commit_reasons:
@@ -124,12 +131,12 @@ jobs:
                       report += "### 📝 Erros nas Mensagens de Commit:\n" + "\n".join(f"- {r}" for r in invalid_commit_reasons) + "\n\n"
                   if file_errors:
                       report += "### 📁 Erros nas Regras de Arquivo:\n" + "\n".join(f"- {e}" for e in file_errors) + "\n\n"
-                  report += "💡 **Como corrigir**: Use `git commit --amend` para alterar a mensagem do commit e divida arquivos grandes em módulos menores."
+                  report += "💡 **Como corrigir**: Ajuste a mensagem do commit com `git commit --amend` e refatore variáveis globais soltas ou arquivos muito extensos."
                   try:
                       pr.create_review(body=report, event="REQUEST_CHANGES")
                   except Exception as ex:
                       pr.create_issue_comment(report)
               sys.exit(1)
 
-          print("✅ Commit & File Linter: Todos os commits e arquivos estão 100% em conformidade com as regras!")
+          print("✅ Commit & File Linter: Concluído com sucesso!")
           EOF

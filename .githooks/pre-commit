@@ -17,11 +17,12 @@ cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"]
 result = subprocess.run(cmd, capture_output=True, text=True)
 staged_files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
 
-MAX_LINES = 400
-MAX_VARS = 25
-IGNORED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock')
+MAX_LINES_BLOCK = 600
+MAX_GLOBAL_MUTABLE_VARS = 10
+IGNORED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock', '.json', '.svg')
 
 errors = []
+warnings = []
 
 for filepath in staged_files:
     if filepath.lower().endswith(IGNORED_EXTENSIONS):
@@ -33,22 +34,32 @@ for filepath in staged_files:
             lines = content.split('\n')
             total_lines = len(lines)
             
-            if total_lines > MAX_LINES:
-                errors.append(f"⛔ Arquivo '{filepath}' possui {total_lines} linhas! (Limite máximo permitido: {MAX_LINES} linhas).")
+            if total_lines > MAX_LINES_BLOCK:
+                errors.append(f"⛔ Arquivo '{filepath}' possui {total_lines} linhas! (Bloqueio acima de {MAX_LINES_BLOCK} linhas). Divida em arquivos menores.")
+            elif total_lines > 400:
+                warnings.append(f"⚠️ Arquivo '{filepath}' possui {total_lines} linhas (Aviso: Recomendado manter abaixo de 400 linhas).")
             
-            var_matches = len(re.findall(r'\b(var|let|const|[a-zA-Z_][a-zA-Z0-9_]*\s*=)\b', content))
-            if var_matches > MAX_VARS:
-                errors.append(f"⛔ Arquivo '{filepath}' possui {var_matches} declarações/atribuições de variáveis! (Limite máximo permitido: {MAX_VARS} variáveis).")
+            # Checar apenas variáveis mutáveis globais soltas no escopo raiz
+            root_let_vars = len(re.findall(r'^(let|var)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=', content, re.MULTILINE))
+            if root_let_vars > MAX_GLOBAL_MUTABLE_VARS:
+                errors.append(f"⛔ Arquivo '{filepath}' possui {root_let_vars} variáveis mutáveis globais no escopo raiz! (Limite máximo: {MAX_GLOBAL_MUTABLE_VARS}). Use encapsulamento.")
     except Exception as e:
         pass
 
+if warnings and not errors:
+    print("\n⚠️  --------------------------------------------------------")
+    print("⚠️  AVISOS DE QUALIDADE DE CÓDIGO (Commit Permitido):")
+    for w in warnings:
+        print(f"  {w}")
+    print("⚠️  --------------------------------------------------------\n")
+
 if errors:
     print("\n❌ ========================================================")
-    print("❌ COMMIT CANCELADO: VIOLAÇÃO DE MÉTRICAS DE ARQUIVO")
+    print("❌ COMMIT CANCELADO: VIOLAÇÃO DE ESTRUTURA DE ARQUIVO")
     print("❌ ========================================================")
     for err in errors:
         print(f"  {err}")
-    print("\n💡 Por favor, refatore o código dividindo em módulos menores antes de commitar.\n")
+    print("\n💡 Dica: Evite criar arquivos monstros (> 600 linhas) ou acumular dezenas de variáveis mutáveis globais soltas.\n")
     sys.exit(1)
 
 sys.exit(0)
