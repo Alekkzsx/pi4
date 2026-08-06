@@ -88,84 +88,11 @@ Tentativa de alteração realizada pelo usuário `@{pr_author}` foi bloqueada.
           # if base_branch == "main" and head_branch != "develop":
           #     ...
 
-          # 1. VALIDAÇÃO DETERMINÍSTICA DE COMMITS E MÉTRICAS DE ARQUIVOS (COMMIT LINTER)
+          # 1. BUSCA DE COMMITS
           commits = [commit.commit.message for commit in pr.get_commits()]
-          CONVENTIONAL_COMMIT_REGEX = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
-          FORBIDDEN_WORDS = ['wip', 'temp', 'teste', 'arrumando', 'ajustes', 'fix', 'changes', 'update', 'qualquer coisa']
-          
-          invalid_commit_reasons = []
-          for c in commits:
-              first_line = c.split('\n')[0].strip()
-              # Check 1: Format Regex
-              if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
-                  invalid_commit_reasons.append(f"`{first_line}` ➔ Fora do padrão Conventional Commits (`type(scope): descrição`).")
-                  continue
-              
-              # Check 2: Minimum Description Length
-              parts = first_line.split(':', 1)
-              description = parts[1].strip() if len(parts) > 1 else ""
-              if len(description) < 10:
-                  invalid_commit_reasons.append(f"`{first_line}` ➔ Descrição muito curta (mínimo 10 caracteres após o `:`).")
-                  continue
-              
-              # Check 3: Forbidden vague words
-              if description.lower() in FORBIDDEN_WORDS or any(w == description.lower() for w in FORBIDDEN_WORDS):
-                  invalid_commit_reasons.append(f"`{first_line}` ➔ Mensagem vaga ou proibida (`{description}`). Seja mais específico.")
-
-          # 1.2 VALIDAÇÃO DE ESTRUTURA DOS ARQUIVOS ALTERADOS (LINHAS E VARIÁVEIS)
-          MAX_LINES_PER_FILE = 400
-          MAX_VARS_PER_FILE = 25
-          
-          file_metrics_errors = []
-          files_list = list(pr.get_files())
-          for f in files_list:
-              if f.status == 'removed':
-                  continue
-              # Apenas arquivos de código/texto
-              if f.filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock')):
-                  continue
-              
-              patch = f.patch or ""
-              lines_count = patch.count('\n') + 1 if patch else 0
-              
-              # Se o patch for grande ou se conseguirmos estimar
-              if lines_count > MAX_LINES_PER_FILE:
-                  file_metrics_errors.append(f"`{f.filename}` ➔ {lines_count} linhas alteradas no arquivo (Limite máximo: {MAX_LINES_PER_FILE} linhas).")
-              
-              # Contagem estimada de declarações de variáveis (const, let, var, =, etc.)
-              var_matches = len(re.findall(r'\b(var|let|const|[a-zA-Z_][a-zA-Z0-9_]*\s*=)\b', patch))
-              if var_matches > MAX_VARS_PER_FILE:
-                  file_metrics_errors.append(f"`{f.filename}` ➔ {var_matches} variáveis declaradas/modificadas (Limite máximo: {MAX_VARS_PER_FILE} variáveis).")
-
-          # SE HOUVER ERROS DE COMMIT OU DE ESTRUTURA DE ARQUIVO:
-          if invalid_commit_reasons or file_metrics_errors:
-              error_sections = []
-              if invalid_commit_reasons:
-                  err_fmt = "\n".join(f"- {r}" for r in invalid_commit_reasons)
-                  error_sections.append(f"### ⛔ Erros nas Mensagens de Commit:\n{err_fmt}")
-              if file_metrics_errors:
-                  err_fmt = "\n".join(f"- {r}" for r in file_metrics_errors)
-                  error_sections.append(f"### ⛔ Erros nas Regras de Arquivo:\n{err_fmt}")
-
-              commit_review_body = f"""## 🔍 Commit Linter - Verificação de Commits e Arquivos
-
-### 🚦 Status da Verificação
-[STATUS: REPROVADO]
-
-{ chr(10).join(error_sections) }
-
-💡 **Como corrigir**:
-- Para alterar a mensagem do seu commit: `git commit --amend -m "feat(modulo): descrição detalhada"`
-- Para reestruturar arquivos grandes: Divida o arquivo em módulos menores.
-"""
-              try:
-                  pr.create_review(body=commit_review_body, event="REQUEST_CHANGES")
-              except Exception as e:
-                  pr.create_issue_comment(commit_review_body)
-              print(f"❌ Rejeitado no Commit Linter! Erros: {invalid_commit_reasons + file_metrics_errors}")
-              sys.exit(1)
 
           # 2. CONFIGURAÇÃO DO MODELO E PROTEÇÃO CONTRA PROMPT INJECTION
+
           genai.configure(api_key=gemini_key)
 
           available_models = []

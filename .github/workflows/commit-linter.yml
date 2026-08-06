@@ -1,0 +1,135 @@
+name: Commit & File Linter
+
+on:
+  push:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  linter:
+    name: Commit & File Quality Linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyGithub
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyGithub
+
+      - name: Run Commit & File Linter
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.repository }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          python - << 'EOF'
+          import os
+          import sys
+          import re
+          from github import Github
+
+          gh_token = os.environ.get("GITHUB_TOKEN")
+          pr_number = os.environ.get("PR_NUMBER")
+          repo_name = os.environ.get("REPO_NAME")
+          head_commit_msg = os.environ.get("COMMIT_MSG", "")
+
+          commits = []
+          pr = None
+          if pr_number and gh_token and repo_name:
+              try:
+                  gh = Github(gh_token)
+                  repo = gh.get_repo(repo_name)
+                  pr = repo.get_pull(int(pr_number))
+                  commits = [c.commit.message for c in pr.get_commits()]
+              except Exception as e:
+                  print(f"Aviso ao buscar PR no PyGithub: {e}")
+          
+          if not commits and head_commit_msg:
+              commits = [head_commit_msg]
+
+          CONVENTIONAL_COMMIT_REGEX = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
+          FORBIDDEN_WORDS = ['wip', 'temp', 'teste', 'arrumando', 'ajustes', 'fix', 'changes', 'update', 'qualquer coisa']
+
+          invalid_commit_reasons = []
+          for c in commits:
+              first_line = c.split('\n')[0].strip()
+              # 1. Checagem de Formato Regex (Conventional Commits)
+              if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
+                  invalid_commit_reasons.append(f"`{first_line}` ➔ Fora do padrão Conventional Commits (`type(scope): descrição`).")
+                  continue
+              
+              # 2. Checagem de Tamanho Mínimo de Descrição (>= 10 caracteres)
+              parts = first_line.split(':', 1)
+              description = parts[1].strip() if len(parts) > 1 else ""
+              if len(description) < 10:
+                  invalid_commit_reasons.append(f"`{first_line}` ➔ Descrição muito curta (mínimo 10 caracteres após o `:`).")
+                  continue
+              
+              # 3. Checagem de Palavras Proibidas / Vagas
+              if description.lower() in FORBIDDEN_WORDS or any(w == description.lower() for w in FORBIDDEN_WORDS):
+                  invalid_commit_reasons.append(f"`{first_line}` ➔ Mensagem vaga ou proibida (`{description}`). Seja mais específico.")
+
+          # 4. Checagem de Métricas dos Arquivos (Máximo de Linhas e Variáveis por Arquivo)
+          MAX_LINES_PER_FILE = 400
+          MAX_VARS_PER_FILE = 25
+          file_errors = []
+
+          if pr:
+              try:
+                  for f in pr.get_files():
+                      if f.status == 'removed' or f.filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock')):
+                          continue
+                      patch = f.patch or ""
+                      lines_count = patch.count('\n') + 1 if patch else 0
+                      if lines_count > MAX_LINES_PER_FILE:
+                          file_errors.append(f"`{f.filename}` ➔ {lines_count} linhas alteradas (Limite permitido: {MAX_LINES_PER_FILE} linhas).")
+                      var_matches = len(re.findall(r'\b(var|let|const|[a-zA-Z_][a-zA-Z0-9_]*\s*=)\b', patch))
+                      if var_matches > MAX_VARS_PER_FILE:
+                          file_errors.append(f"`{f.filename}` ➔ {var_matches} variáveis alteradas (Limite permitido: {MAX_VARS_PER_FILE} variáveis).")
+              except Exception as e:
+                  print(f"Aviso ao analisar arquivos do PR: {e}")
+
+          if invalid_commit_reasons or file_errors:
+              print("❌ ===========================================")
+              print("❌ REPROVADO NO COMMIT & FILE LINTER!")
+              print("❌ ===========================================")
+              if invalid_commit_reasons:
+                  print("\n⛔ Erros de Commit:")
+                  for r in invalid_commit_reasons:
+                      print(f"  - {r}")
+              if file_errors:
+                  print("\n⛔ Erros de Arquivo:")
+                  for e in file_errors:
+                      print(f"  - {e}")
+              
+              if pr:
+                  report = "## ⛔ Commit & File Linter - Falha na Verificação\n\n"
+                  if invalid_commit_reasons:
+                      report += "### 📝 Erros nas Mensagens de Commit:\n" + "\n".join(f"- {r}" for r in invalid_commit_reasons) + "\n\n"
+                  if file_errors:
+                      report += "### 📁 Erros nas Regras de Arquivo:\n" + "\n".join(f"- {e}" for e in file_errors) + "\n\n"
+                  report += "💡 **Como corrigir**: Use `git commit --amend` para alterar a mensagem do commit e divida arquivos grandes em módulos menores."
+                  try:
+                      pr.create_review(body=report, event="REQUEST_CHANGES")
+                  except Exception as ex:
+                      pr.create_issue_comment(report)
+              sys.exit(1)
+
+          print("✅ Commit & File Linter: Todos os commits e arquivos estão 100% em conformidade com as regras!")
+          EOF
