@@ -1,0 +1,60 @@
+#!/bin/sh
+# Git Hook Local: commit-msg
+
+COMMIT_MSG_FILE="$1"
+
+PYTHON_CMD="python"
+if command -v py >/dev/null 2>&1; then
+    PYTHON_CMD="py"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+fi
+
+"$PYTHON_CMD" - "$COMMIT_MSG_FILE" << 'EOF'
+import sys
+import re
+
+commit_msg_file = sys.argv[1]
+try:
+    with open(commit_msg_file, 'r', encoding='utf-8') as f:
+        msg = f.read().strip()
+except Exception as e:
+    sys.exit(0)
+
+first_line = msg.split('\n')[0].strip()
+
+# Se for um commit de merge automático, ignorar
+if first_line.startswith("Merge branch") or first_line.startswith("Revert "):
+    sys.exit(0)
+
+CONVENTIONAL_COMMIT_REGEX = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
+FORBIDDEN_WORDS = ['wip', 'temp', 'teste', 'arrumando', 'ajustes', 'fix', 'changes', 'update', 'qualquer coisa']
+
+errors = []
+
+if not re.match(CONVENTIONAL_COMMIT_REGEX, first_line):
+    errors.append(f"⛔ Mensagem fora do padrão Conventional Commits (`type(scope): descrição`).")
+else:
+    parts = first_line.split(':', 1)
+    description = parts[1].strip() if len(parts) > 1 else ""
+    
+    if len(description) < 10:
+        errors.append(f"⛔ Descrição muito curta (`{description}`). É necessário ter no mínimo 10 caracteres após o `:`.")
+    
+    if description.lower() in FORBIDDEN_WORDS or any(w == description.lower() for w in FORBIDDEN_WORDS):
+        errors.append(f"⛔ Mensagem vaga ou proibida (`{description}`). Descreva com clareza o que foi alterado.")
+
+if errors:
+    print("\n❌ ========================================================")
+    print("❌ COMMIT CANCELADO: MENSAGEM DE COMMIT INVÁLIDA")
+    print("❌ ========================================================")
+    print(f"Sua mensagem: \"{first_line}\"\n")
+    for err in errors:
+        print(f"  {err}")
+    print("\n💡 Exemplo correto: `feat(login): implementar autenticação via JWT`\n")
+    sys.exit(1)
+
+sys.exit(0)
+EOF
+
+exit $?

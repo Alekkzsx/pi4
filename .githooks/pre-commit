@@ -1,0 +1,57 @@
+#!/bin/sh
+# Git Hook Local: pre-commit
+
+PYTHON_CMD="python"
+if command -v py >/dev/null 2>&1; then
+    PYTHON_CMD="py"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+fi
+
+"$PYTHON_CMD" - << 'EOF'
+import subprocess
+import sys
+import re
+
+cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"]
+result = subprocess.run(cmd, capture_output=True, text=True)
+staged_files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
+
+MAX_LINES = 400
+MAX_VARS = 25
+IGNORED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.lock', 'package-lock.json', 'yarn.lock')
+
+errors = []
+
+for filepath in staged_files:
+    if filepath.lower().endswith(IGNORED_EXTENSIONS):
+        continue
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+            lines = content.split('\n')
+            total_lines = len(lines)
+            
+            if total_lines > MAX_LINES:
+                errors.append(f"⛔ Arquivo '{filepath}' possui {total_lines} linhas! (Limite máximo permitido: {MAX_LINES} linhas).")
+            
+            var_matches = len(re.findall(r'\b(var|let|const|[a-zA-Z_][a-zA-Z0-9_]*\s*=)\b', content))
+            if var_matches > MAX_VARS:
+                errors.append(f"⛔ Arquivo '{filepath}' possui {var_matches} declarações/atribuições de variáveis! (Limite máximo permitido: {MAX_VARS} variáveis).")
+    except Exception as e:
+        pass
+
+if errors:
+    print("\n❌ ========================================================")
+    print("❌ COMMIT CANCELADO: VIOLAÇÃO DE MÉTRICAS DE ARQUIVO")
+    print("❌ ========================================================")
+    for err in errors:
+        print(f"  {err}")
+    print("\n💡 Por favor, refatore o código dividindo em módulos menores antes de commitar.\n")
+    sys.exit(1)
+
+sys.exit(0)
+EOF
+
+exit $?
