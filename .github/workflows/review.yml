@@ -164,9 +164,24 @@ Você é o Reviewer Oficial de Código do repositório. Sua função é realizar
           latest_commit = list(pr.get_commits())[-1]
           files = pr.get_files()
           
-          diff_text = ""
+          IGNORED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.svg', '.lock', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml')
+          
+          diff_entries = []
           for f in files:
-              diff_text += f"\nArquivo: {f.filename} ({f.status})\nPatch:\n{f.patch or 'Sem alteração de código'}\n"
+              fname = f.filename
+              is_ignored = fname.lower().endswith(IGNORED_EXTENSIONS) or any(ign in fname.lower() for ign in ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'])
+              
+              if is_ignored:
+                  diff_entries.append(f"Arquivo: {fname} ({f.status}) [Arquivo de dados/dependência ou binário - diff de conteúdo omitido]")
+              else:
+                  patch_content = f.patch or "Sem alteração de código ou arquivo de texto limpo"
+                  if len(patch_content) > 5000:
+                      patch_content = patch_content[:5000] + "\n... [diff truncado neste arquivo por limite de tamanho]"
+                  diff_entries.append(f"Arquivo: {fname} ({f.status})\nPatch:\n{patch_content}")
+
+          diff_text = "\n\n".join(diff_entries)
+          if len(diff_text) > 50000:
+              diff_text = diff_text[:50000] + "\n... [resumo total de diffs atingiu o limite de 50.000 caracteres]"
 
           commits_str = "\n".join(f"- {c.strip()}" for c in commits)
 
@@ -182,8 +197,9 @@ Por favor, analise o seguinte Pull Request:
 </commit_messages>
 
 <code_diff>
-{diff_text[:15000]}
+{diff_text}
 </code_diff>
+
 
 Responda OBRIGATORIAMENTE em Português do Brasil (pt-BR) fornecendo duas seções:
 
