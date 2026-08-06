@@ -1,0 +1,5 @@
+# Regra de Propriedade de Código Nativa do GitHub
+# Apenas o usuário @Alekkzsx é o proprietário oficial do Reviewer e dos workflows de CI/CD.
+
+.github/workflows/ @Alekkzsx
+.github/CODEOWNERS @Alekkzsx

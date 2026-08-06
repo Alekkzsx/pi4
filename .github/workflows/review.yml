@@ -34,6 +34,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           REPO_NAME: ${{ github.repository }}
         run: |
           python - << 'EOF'
@@ -47,6 +48,7 @@ jobs:
           gemini_key = os.environ.get("GEMINI_API_KEY")
           gh_token = os.environ.get("GITHUB_TOKEN")
           pr_number = int(os.environ.get("PR_NUMBER"))
+          pr_author = os.environ.get("PR_AUTHOR")
           repo_name = os.environ.get("REPO_NAME")
 
           if not gemini_key:
@@ -60,25 +62,33 @@ jobs:
           base_branch = pr.base.ref
           head_branch = pr.head.ref
 
-          # REGRA: Pull Requests para a 'main' DEVEM vir obrigatoriamente da 'develop'
-          if base_branch == "main" and head_branch != "develop":
-              branch_error_msg = f"""## 🔍 Reviewer - Code Review
+          # REGRA DE SEGURANÇA ABSOLUTA: Apenas o usuário Alekkzsx pode alterar o Reviewer/workflows
+          ALLOWED_ADMIN = "Alekkzsx"
+          files_changed = [f.filename for f in pr.get_files()]
+          if any(f.startswith(".github/workflows/") for f in files_changed):
+              if pr_author != ALLOWED_ADMIN:
+                  sec_error_msg = f"""## 🔍 Reviewer - Code Review
 
 ### 🚦 Status da Verificação
 [STATUS: REPROVADO]
 
-⛔ **Violação de Regra de Fluxo de Branches**:
-Pull Requests com destino à branch `main` DEVEM vir obrigatoriamente da branch `develop`!
-(Sua solicitação tentou enviar diretamente da branch `{head_branch}`).
-
-Por favor, redirecione este Pull Request para a branch `develop` para seguir o fluxo oficial do repositório.
+⛔ **Violação de Segurança - Permissão Negada**:
+Apenas o usuário **@{ALLOWED_ADMIN}** possui autorização para alterar as configurações e workflows do Reviewer (`.github/workflows/`)!
+Tentativa de alteração realizada pelo usuário `@{pr_author}` foi bloqueada.
 """
-              try:
-                  pr.create_review(body=branch_error_msg, event="REQUEST_CHANGES")
-              except Exception as e:
-                  pr.create_issue_comment(branch_error_msg)
-              print(f"❌ PR para a main rejeitado porque a branch de origem é '{head_branch}' em vez de 'develop'!")
-              sys.exit(1)
+                  try:
+                      pr.create_review(body=sec_error_msg, event="REQUEST_CHANGES")
+                  except Exception as e:
+                      pr.create_issue_comment(sec_error_msg)
+                  print(f"❌ Acesso Negado! O usuário '{pr_author}' tentou alterar arquivos do Reviewer.")
+                  sys.exit(1)
+
+          # REGRA (TEMPORARIAMENTE DESATIVADA PARA TESTES):
+          # Pull Requests para a 'main' de qualquer branch serão aceitos durante a fase de testes.
+          # if base_branch == "main" and head_branch != "develop":
+          #     ...
+
+
 
           genai.configure(api_key=gemini_key)
 
