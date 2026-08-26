@@ -182,19 +182,33 @@ except Exception as e:
     print(f"Aviso ao consultar modelos: {e}")
 
 preferred_order = [
+    'models/gemini-3.7-flash',
+    'models/gemini-3.7-pro',
     'models/gemini-2.5-flash',
+    'models/gemini-2.5-pro',
     'models/gemini-2.0-flash',
+    'models/gemini-2.0-pro',
     'models/gemini-1.5-flash',
     'models/gemini-1.5-pro',
-    'models/gemini-2.5-pro',
+    'gemini-3.7-flash',
+    'gemini-3.7-pro',
     'gemini-2.5-flash',
+    'gemini-2.5-pro',
     'gemini-2.0-flash',
     'gemini-1.5-flash'
 ]
 
 selected_models = [m for m in preferred_order if m in available_models]
+# Adicionar quaisquer outros modelos disponíveis com suporte a geração como fallback
+for m in available_models:
+    if m not in selected_models and 'flash' in m.lower():
+        selected_models.append(m)
+for m in available_models:
+    if m not in selected_models:
+        selected_models.append(m)
+
 if not selected_models:
-    selected_models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+    selected_models = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
 
 system_instruction = """
 Você é o Reviewer Oficial de Código do repositório. Sua função é inspecionar rigorosamente Pull Requests em busca de:
