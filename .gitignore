@@ -4,6 +4,5 @@ Thumbs.db
 *.tmp
 *.log
 
-# NUNCA IGNORAR PASTAS DE REGRAS DE CI/CD E GIT HOOKS
+# NUNCA IGNORAR PASTAS DE REGRAS DE CI/CD
 !.github/
-!.githooks/
