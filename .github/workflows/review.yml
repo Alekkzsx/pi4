@@ -63,9 +63,9 @@ jobs:
           head_branch = pr.head.ref
 
           # ═══════════════════════════════════════════════════════════════
-          # REGRA DE SEGURANÇA: Apenas @Alekkzsx pode alterar workflows
+          # REGRA DE SEGURANÇA: Apenas administradores autorizados podem alterar workflows
           # ═══════════════════════════════════════════════════════════════
-          ALLOWED_ADMIN = "Alekkzsx"
+          ALLOWED_ADMINS = ["Alekkzsx", "GuilhermeMoreira07"]
 
           # Buscar dados do PR uma única vez (evitar chamadas duplicadas à API)
           pr_files = list(pr.get_files())
@@ -73,14 +73,15 @@ jobs:
           files_changed = [f.filename for f in pr_files]
 
           if any(f.startswith(".github/workflows/") for f in files_changed):
-              if pr_author != ALLOWED_ADMIN:
+              if pr_author not in ALLOWED_ADMINS:
+                  allowed_str = ", ".join(f"@{admin}" for admin in ALLOWED_ADMINS)
                   sec_error_msg = f"""## 🔍 Reviewer - Code Review
 
 ### 🚦 Status da Verificação
 [STATUS: REPROVADO]
 
 ⛔ **Violação de Segurança - Permissão Negada**:
-Apenas o usuário **@{ALLOWED_ADMIN}** possui autorização para alterar as configurações e workflows do Reviewer (`.github/workflows/`)!
+Apenas os administradores **{allowed_str}** possuem autorização para alterar as configurações e workflows do Reviewer (`.github/workflows/`)!
 Tentativa de alteração realizada pelo usuário `@{pr_author}` foi bloqueada.
 """
                   try:
